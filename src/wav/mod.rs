@@ -70,6 +70,115 @@ pub fn parse(bytes: &[u8]) -> Result<WavFile> {
     Ok(WavFile::new(spec, samples))
 }
 
+pub fn encode(wav: &WavFile) -> Result<Vec<u8>> {
+    match wav.samples() {
+        SampleData::Float32(buffer) => encode_f32_wav(wav.spec(), buffer),
+        _ => Err(AudioError::UnsupportedFormat(
+            "saving currently supports only Float32 WAV data; convert processed audio with WavFile::from_f32 first"
+                .to_string(),
+        )),
+    }
+}
+
+fn encode_f32_wav(spec: &WavSpec, buffer: &AudioBuffer<f32>) -> Result<Vec<u8>> {
+    validate_f32_write_spec(spec, buffer)?;
+
+    let channels = u32::from(spec.channels);
+    let bytes_per_sample = 4u32;
+    let block_align = spec.channels * bytes_per_sample as u16;
+    let byte_rate = spec.sample_rate * u32::from(block_align);
+    let data_size = channels
+        .checked_mul(buffer.samples_per_channel() as u32)
+        .and_then(|sample_count| sample_count.checked_mul(bytes_per_sample))
+        .ok_or_else(|| AudioError::InvalidBuffer("buffer is too large".to_string()))?;
+    let riff_size = 4 + (8 + 18) + (8 + data_size);
+
+    let mut bytes = Vec::with_capacity((riff_size + 8) as usize);
+    bytes.extend_from_slice(b"RIFF");
+    push_u32_le(&mut bytes, riff_size);
+    bytes.extend_from_slice(b"WAVE");
+
+    bytes.extend_from_slice(b"fmt ");
+    push_u32_le(&mut bytes, 18);
+    push_u16_le(&mut bytes, IEEE_FLOAT);
+    push_u16_le(&mut bytes, spec.channels);
+    push_u32_le(&mut bytes, spec.sample_rate);
+    push_u32_le(&mut bytes, byte_rate);
+    push_u16_le(&mut bytes, block_align);
+    push_u16_le(&mut bytes, 32);
+    push_u16_le(&mut bytes, 0);
+
+    bytes.extend_from_slice(b"data");
+    push_u32_le(&mut bytes, data_size);
+
+    for sample_index in 0..buffer.samples_per_channel() {
+        for channel in &buffer.channels {
+            bytes.extend_from_slice(&channel[sample_index].to_le_bytes());
+        }
+    }
+
+    Ok(bytes)
+}
+
+fn validate_f32_write_spec(spec: &WavSpec, buffer: &AudioBuffer<f32>) -> Result<()> {
+    if spec.sample_format != SampleFormat::Float || spec.bits_per_sample != 32 {
+        return Err(AudioError::UnsupportedFormat(
+            "Float32 WAV writing requires SampleFormat::Float and 32 bits per sample".to_string(),
+        ));
+    }
+    if spec.sample_rate == 0 {
+        return Err(AudioError::InvalidBuffer(
+            "sample rate must be greater than zero".to_string(),
+        ));
+    }
+    if spec.channels == 0 || spec.channels > 128 {
+        return Err(AudioError::InvalidBuffer(format!(
+            "channel count must be in 1..=128, got {}",
+            spec.channels
+        )));
+    }
+    if buffer.channel_count() != usize::from(spec.channels) {
+        return Err(AudioError::InvalidBuffer(format!(
+            "buffer has {} channels but spec says {}",
+            buffer.channel_count(),
+            spec.channels
+        )));
+    }
+    if buffer.samples_per_channel() == 0 {
+        return Err(AudioError::InvalidBuffer(
+            "channels must contain at least one sample".to_string(),
+        ));
+    }
+    if buffer
+        .channels
+        .iter()
+        .any(|channel| channel.len() != buffer.samples_per_channel())
+    {
+        return Err(AudioError::InvalidBuffer(
+            "all channels must have the same number of samples".to_string(),
+        ));
+    }
+
+    let data_size = buffer
+        .channel_count()
+        .checked_mul(buffer.samples_per_channel())
+        .and_then(|sample_count| sample_count.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| AudioError::InvalidBuffer("buffer is too large".to_string()))?;
+    let riff_size = 4usize
+        .checked_add(8 + 18)
+        .and_then(|size| size.checked_add(8))
+        .and_then(|size| size.checked_add(data_size))
+        .ok_or_else(|| AudioError::InvalidBuffer("buffer is too large".to_string()))?;
+
+    if data_size > u32::MAX as usize || riff_size > u32::MAX as usize {
+        return Err(AudioError::InvalidBuffer(
+            "buffer is too large for a WAV file".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Chunk<'a> {
     id: [u8; 4],
@@ -320,4 +429,12 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
         bytes[offset + 2],
         bytes[offset + 3],
     ])
+}
+
+fn push_u16_le(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32_le(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
 }
