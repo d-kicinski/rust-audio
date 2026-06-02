@@ -9,6 +9,7 @@ pub enum AudioError {
     UnsupportedFormat(String),
     InconsistentHeader(String),
     InvalidBuffer(String),
+    InvalidTransform(String),
     UnexpectedEof,
 }
 
@@ -20,6 +21,7 @@ impl fmt::Display for AudioError {
             Self::UnsupportedFormat(message) => write!(f, "unsupported audio format: {message}"),
             Self::InconsistentHeader(message) => write!(f, "inconsistent WAV header: {message}"),
             Self::InvalidBuffer(message) => write!(f, "invalid audio buffer: {message}"),
+            Self::InvalidTransform(message) => write!(f, "invalid audio transform: {message}"),
             Self::UnexpectedEof => write!(f, "unexpected end of file"),
         }
     }

@@ -1,3 +1,4 @@
+pub mod dsp;
 mod error;
 mod types;
 mod wav;
