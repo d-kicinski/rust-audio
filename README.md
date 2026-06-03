@@ -14,6 +14,12 @@ cargo build
 cargo test
 ```
 
+## Resampling
+
+The library includes zero-order hold, linear, and sinc-based resampling
+converters. See [Audio Resampling Algorithms](docs/resampling.md) for the
+method behind each converter and guidance on choosing one.
+
 ## Run Sample Binary
 
 ```bash
