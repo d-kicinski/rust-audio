@@ -1,4 +1,4 @@
-use std::hint::black_box;
+use std::{hint::black_box, time::Duration};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rust_audio::{
@@ -43,6 +43,11 @@ fn options(converter: Converter) -> ResampleOptions {
 
 fn bench_resamplers(c: &mut Criterion) {
     let mut group = c.benchmark_group("resampling");
+    let include_allocating = std::env::var_os("RUST_AUDIO_BENCH_ALLOC").is_some();
+
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(1));
 
     for &(input_rate, output_rate, duration_ms, duration_name) in CASES {
         let input = make_audio(duration_ms, input_rate);
@@ -54,28 +59,31 @@ fn bench_resamplers(c: &mut Criterion) {
         for &(converter, converter_name) in CONVERTERS {
             let options = options(converter);
 
-            group.bench_with_input(
-                BenchmarkId::new(converter_name, &case_name),
-                &(&input, input_rate, output_rate, options),
-                |b, &(input, input_rate, output_rate, options)| {
-                    b.iter(|| {
-                        let output = resample_to_rate(
-                            black_box(input),
-                            black_box(input_rate),
-                            black_box(output_rate),
-                            black_box(options),
-                        )
-                        .unwrap();
-                        black_box(output);
-                    });
-                },
-            );
+            if include_allocating {
+                let allocating_name = format!("{converter_name}_alloc");
+
+                group.bench_with_input(
+                    BenchmarkId::new(allocating_name, &case_name),
+                    &(&input, input_rate, output_rate, options),
+                    |b, &(input, input_rate, output_rate, options)| {
+                        b.iter(|| {
+                            let output = resample_to_rate(
+                                black_box(input),
+                                black_box(input_rate),
+                                black_box(output_rate),
+                                black_box(options),
+                            )
+                            .unwrap();
+                            black_box(output);
+                        });
+                    },
+                );
+            }
 
             let mut output = AudioBuffer::new(Vec::new());
-            let converter_into_name = format!("{converter_name}_into");
 
             group.bench_with_input(
-                BenchmarkId::new(converter_into_name, &case_name),
+                BenchmarkId::new(converter_name, &case_name),
                 &(&input, input_rate, output_rate, options),
                 |b, &(input, input_rate, output_rate, options)| {
                     b.iter(|| {
