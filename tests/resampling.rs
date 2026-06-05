@@ -1,5 +1,8 @@
 use rust_audio::{
-    dsp::resample::{resample, resample_to_rate, Converter, ResampleOptions},
+    dsp::resample::{
+        resample, resample_into, resample_to_rate, resample_to_rate_into, Converter,
+        ResampleOptions,
+    },
     AudioBuffer, AudioError,
 };
 
@@ -109,6 +112,56 @@ fn sinc_converters_produce_finite_nonzero_channel_independent_output() {
         assert!(output.channels[0].iter().any(|sample| sample.abs() > 0.001));
         assert_ne!(output.channels[0], output.channels[1]);
     }
+}
+
+#[test]
+fn resample_into_matches_allocating_api() {
+    let input = AudioBuffer::new(vec![
+        vec![0.0, 0.25, 0.75, 1.0, 0.75, 0.25, 0.0],
+        vec![1.0, 0.5, 0.0, -0.5, -1.0, -0.5, 0.0],
+    ]);
+
+    for converter in [Converter::Linear, Converter::SincMedium] {
+        let options = options(converter);
+        let allocated = resample(&input, 1.5, options).unwrap();
+        let mut reused = AudioBuffer::new(vec![vec![123.0, 456.0]]);
+
+        resample_into(&input, &mut reused, 1.5, options).unwrap();
+
+        assert_eq!(reused, allocated);
+    }
+}
+
+#[test]
+fn resample_to_rate_into_reuses_existing_channel_storage() {
+    let input = AudioBuffer::new(vec![vec![0.0, 1.0, 0.0]]);
+    let mut channel = Vec::with_capacity(64);
+    channel.extend([99.0, 100.0, 101.0]);
+    let capacity = channel.capacity();
+    let mut output = AudioBuffer::new(vec![channel]);
+
+    resample_to_rate_into(
+        &input,
+        &mut output,
+        24_000,
+        48_000,
+        options(Converter::Linear),
+    )
+    .unwrap();
+
+    assert_eq!(output.channels[0].capacity(), capacity);
+    assert_eq!(output.channels[0], vec![0.0, 0.5, 1.0, 0.5, 0.0, 0.0]);
+}
+
+#[test]
+fn resample_to_rate_into_rejects_invalid_sample_rates() {
+    let input = AudioBuffer::new(vec![vec![0.0, 1.0, 0.0]]);
+    let mut output = AudioBuffer::new(Vec::new());
+
+    assert!(matches!(
+        resample_to_rate_into(&input, &mut output, 0, 48_000, options(Converter::Linear)),
+        Err(AudioError::InvalidTransform(_))
+    ));
 }
 
 fn assert_close(actual: f32, expected: f32, tolerance: f32) {

@@ -41,20 +41,43 @@ pub fn resample(
     let mut output = Vec::with_capacity(channels);
 
     for input_channel in &input.channels {
-        output.push(match options.converter {
-            Converter::ZeroOrderHold => resample_zoh(input_channel, output_frames, ratio),
-            Converter::Linear => resample_linear(input_channel, output_frames, ratio),
-            Converter::SincFastest => {
-                resample_sinc(input_channel, output_frames, ratio, coeffs::FASTEST)
-            }
-            Converter::SincMedium => {
-                resample_sinc(input_channel, output_frames, ratio, coeffs::MEDIUM)
-            }
-            Converter::SincBest => resample_sinc(input_channel, output_frames, ratio, coeffs::BEST),
-        });
+        let mut output_channel = Vec::with_capacity(output_frames);
+        resample_channel_into(
+            input_channel,
+            &mut output_channel,
+            output_frames,
+            ratio,
+            options,
+        );
+        output.push(output_channel);
     }
 
     Ok(AudioBuffer::new(output))
+}
+
+pub fn resample_into(
+    input: &AudioBuffer<f32>,
+    output: &mut AudioBuffer<f32>,
+    ratio: f64,
+    options: ResampleOptions,
+) -> Result<()> {
+    validate_ratio(ratio)?;
+    validate_buffer(input)?;
+
+    let input_frames = input.samples_per_channel();
+    let output_frames = output_frame_count(input_frames, ratio)?;
+
+    let channels = input.channel_count();
+    output.channels.truncate(channels);
+    output
+        .channels
+        .resize_with(channels, || Vec::with_capacity(output_frames));
+
+    for (input_channel, output_channel) in input.channels.iter().zip(&mut output.channels) {
+        resample_channel_into(input_channel, output_channel, output_frames, ratio, options);
+    }
+
+    Ok(())
 }
 
 pub fn resample_to_rate(
@@ -71,6 +94,27 @@ pub fn resample_to_rate(
 
     resample(
         input,
+        f64::from(output_rate) / f64::from(input_rate),
+        options,
+    )
+}
+
+pub fn resample_to_rate_into(
+    input: &AudioBuffer<f32>,
+    output: &mut AudioBuffer<f32>,
+    input_rate: u32,
+    output_rate: u32,
+    options: ResampleOptions,
+) -> Result<()> {
+    if input_rate == 0 || output_rate == 0 {
+        return Err(AudioError::InvalidTransform(
+            "sample rates must be greater than zero".to_string(),
+        ));
+    }
+
+    resample_into(
+        input,
+        output,
         f64::from(output_rate) / f64::from(input_rate),
         options,
     )
@@ -124,17 +168,40 @@ fn output_frame_count(input_frames: usize, ratio: f64) -> Result<usize> {
     Ok(frames as usize)
 }
 
-fn resample_zoh(input: &[f32], output_frames: usize, ratio: f64) -> Vec<f32> {
-    let mut output = Vec::with_capacity(output_frames);
+fn resample_channel_into(
+    input: &[f32],
+    output: &mut Vec<f32>,
+    output_frames: usize,
+    ratio: f64,
+    options: ResampleOptions,
+) {
+    match options.converter {
+        Converter::ZeroOrderHold => resample_zoh_into(input, output, output_frames, ratio),
+        Converter::Linear => resample_linear_into(input, output, output_frames, ratio),
+        Converter::SincFastest => {
+            resample_sinc_into(input, output, output_frames, ratio, coeffs::FASTEST)
+        }
+        Converter::SincMedium => {
+            resample_sinc_into(input, output, output_frames, ratio, coeffs::MEDIUM)
+        }
+        Converter::SincBest => {
+            resample_sinc_into(input, output, output_frames, ratio, coeffs::BEST)
+        }
+    }
+}
+
+fn resample_zoh_into(input: &[f32], output: &mut Vec<f32>, output_frames: usize, ratio: f64) {
+    output.clear();
+    output.reserve(output_frames);
     for output_index in 0..output_frames {
         let input_index = (output_index as f64 / ratio).floor() as usize;
         output.push(input[input_index.min(input.len() - 1)]);
     }
-    output
 }
 
-fn resample_linear(input: &[f32], output_frames: usize, ratio: f64) -> Vec<f32> {
-    let mut output = Vec::with_capacity(output_frames);
+fn resample_linear_into(input: &[f32], output: &mut Vec<f32>, output_frames: usize, ratio: f64) {
+    output.clear();
+    output.reserve(output_frames);
     for output_index in 0..output_frames {
         let position = output_index as f64 / ratio;
         let left = position.floor() as usize;
@@ -143,16 +210,17 @@ fn resample_linear(input: &[f32], output_frames: usize, ratio: f64) -> Vec<f32> 
         let sample = input[left] as f64 + fraction * (input[right] as f64 - input[left] as f64);
         output.push(sample as f32);
     }
-    output
 }
 
-fn resample_sinc(
+fn resample_sinc_into(
     input: &[f32],
+    output: &mut Vec<f32>,
     output_frames: usize,
     ratio: f64,
     coeffs: coeffs::SincCoeffs,
-) -> Vec<f32> {
-    let mut output = Vec::with_capacity(output_frames);
+) {
+    output.clear();
+    output.reserve(output_frames);
     let scale = ratio.min(1.0);
     let table_step = coeffs.increment as f64 * scale;
     let half_len = ((coeffs.values.len() - 2) as f64 / table_step).ceil() as isize;
@@ -176,8 +244,6 @@ fn resample_sinc(
 
         output.push((acc * scale) as f32);
     }
-
-    output
 }
 
 fn interpolated_coeff(coeffs: &[f32], index: f64) -> Option<f64> {
